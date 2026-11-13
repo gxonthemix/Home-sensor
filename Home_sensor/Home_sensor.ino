@@ -3,6 +3,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <math.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include "wifi_secrets.h"
 
 // Pins and I2C addresses: each OLED has its own bus.
 #define DHT_PIN 27
@@ -23,6 +26,7 @@ const unsigned long PAGE_INTERVAL = 15000;
 const unsigned long FRAME_INTERVAL = 200;
 
 DHT dht(DHT_PIN, DHT_TYPE);
+WebServer server(80);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 Adafruit_SSD1306 dewDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire1, OLED_RESET);
 
@@ -39,6 +43,46 @@ unsigned long lastPageChange = 0;
 unsigned long lastFrame = 0;
 bool showHistory = false;
 uint8_t animationStep = 0;
+unsigned long lastWifiAttempt = 0;
+
+// The page runs locally on the ESP32 and requests fresh readings every 3 seconds.
+const char WEB_PAGE[] PROGMEM = R"html(
+<!doctype html><html lang="hr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home Sensor</title><style>
+body{font-family:system-ui,sans-serif;background:#101d25;color:#effaf8;margin:0;padding:32px 20px}
+main{max-width:680px;margin:auto}h1{font-size:2.3rem;margin-bottom:4px}p{color:#a6c5c2}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-top:32px}
+.card{background:#1c3039;border:1px solid #35515a;border-radius:18px;padding:22px}
+.label{color:#a6c5c2}.value{font-size:2rem;font-weight:650;margin-top:12px;color:#9eead6}
+</style></head><body><main><p>KUĆNA METEOROLOŠKA STANICA</p><h1>Home Sensor</h1>
+<p id="status" role="status">Povezivanje sa senzorom...</p><div class="grid">
+<div class="card"><div class="label">Temperatura</div><div class="value" id="temperature">—</div></div>
+<div class="card"><div class="label">Vlažnost</div><div class="value" id="humidity">—</div></div>
+<div class="card"><div class="label">Rosište</div><div class="value" id="dewPoint">—</div></div>
+</div></main><script>
+async function refresh(){try{const response=await fetch('/api/readings',{cache:'no-store'});
+if(!response.ok)throw Error();const data=await response.json();
+for(const [key,unit] of [['temperature',' °C'],['humidity',' %'],['dewPoint',' °C']])
+document.getElementById(key).textContent=data[key]===null?'—':data[key].toFixed(1)+unit;
+document.getElementById('status').textContent=data.valid?'Ažurirano: '+new Date().toLocaleTimeString('hr-HR'):'Očitavanje senzora nije dostupno.';
+}catch(e){document.getElementById('status').textContent='Veza sa senzorom je prekinuta.';
+for(const id of ['temperature','humidity','dewPoint'])document.getElementById(id).textContent='—';}}
+refresh();setInterval(refresh,3000);
+</script></body></html>)html";
+
+String jsonNumber(float value) {
+  return isfinite(value) ? String(value, 1) : "null";
+}
+
+void handleReadings() {
+  String json = "{\"valid\":" + String(readingValid ? "true" : "false");
+  json += ",\"temperature\":" + jsonNumber(readingValid ? temperature : NAN);
+  json += ",\"humidity\":" + jsonNumber(readingValid ? humidity : NAN);
+  json += ",\"dewPoint\":" + jsonNumber(readingValid ? dewPoint : NAN) + "}";
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", json);
+}
 
 // Check for an I2C response before initializing a display.
 bool i2cDeviceFound(TwoWire &bus, uint8_t address) {
@@ -158,6 +202,12 @@ void readSensor() {
 void setup() {
   // Initialize both buses explicitly so the display library preserves their pins.
   Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  server.on("/", []() { server.send_P(200, "text/html; charset=utf-8", WEB_PAGE); });
+  server.on("/api/readings", handleReadings);
+  server.begin();
   Wire.begin(OLED_SDA, OLED_SCL);
   bool secondBusReady = Wire1.begin(SECOND_OLED_SDA, SECOND_OLED_SCL);
   dht.begin();
@@ -179,6 +229,18 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+  server.handleClient();
+  static bool wifiWasConnected = false;
+  bool wifiConnected = WiFi.status() == WL_CONNECTED;
+  if (wifiConnected && !wifiWasConnected) {
+    Serial.print("Home Sensor web page: http://");
+    Serial.println(WiFi.localIP());
+  }
+  if (!wifiConnected && now - lastWifiAttempt >= 30000) {
+    lastWifiAttempt = now;
+    WiFi.reconnect();
+  }
+  wifiWasConnected = wifiConnected;
   bool detailsNeedUpdate = false;
   if (now - lastSensorRead >= SENSOR_INTERVAL) {
     lastSensorRead = now;
