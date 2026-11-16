@@ -6,6 +6,9 @@ An ESP32-based home sensor that monitors temperature and humidity with a DHT22 a
 | :---: | :---: |
 | ![The prototype showing humidity and dew point](images/air-conditions.jpg) | ![The prototype showing minimum and maximum temperatures](images/temperature-history.jpg) |
 
+![Local Wi-Fi dashboard](images/Screenshot%202026-11-17%20at%2000.30.51.png)
+
+
 ## How it works
 
 The firmware reads temperature and relative humidity every three seconds. It uses these values to estimate the **dew point** with the Magnus formula. The dew point is the temperature at which water vapour in the air can begin to condense on a sufficiently cold surface.
